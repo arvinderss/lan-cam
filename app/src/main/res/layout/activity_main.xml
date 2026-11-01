@@ -13,7 +13,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom|start"
-        android:background="#88000000"
+        android:background="#99000000"
         android:orientation="vertical"
         android:padding="12dp">
 
@@ -23,7 +23,7 @@
             android:layout_height="wrap_content"
             android:text="Idle"
             android:textColor="#fff"
-            android:textSize="16sp" />
+            android:textSize="15sp" />
 
         <Spinner
             android:id="@+id/resolution"
@@ -31,10 +31,31 @@
             android:layout_height="wrap_content"
             android:backgroundTint="#fff" />
 
+        <androidx.appcompat.widget.SwitchCompat
+            android:id="@+id/useMic"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Use phone microphone"
+            android:textColor="#fff" />
+
+        <androidx.appcompat.widget.SwitchCompat
+            android:id="@+id/dnd"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Do Not Disturb while live"
+            android:textColor="#fff" />
+
+        <androidx.appcompat.widget.SwitchCompat
+            android:id="@+id/blockCalls"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Reject incoming calls while live"
+            android:textColor="#fff" />
+
         <Button
             android:id="@+id/toggle"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Start" />
+            android:text="Go live" />
     </LinearLayout>
 </FrameLayout>

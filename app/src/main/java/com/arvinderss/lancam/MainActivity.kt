@@ -1,128 +1,136 @@
 package com.arvinderss.lancam
 
 import android.Manifest
+import android.app.role.RoleManager
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.os.IBinder
+import android.provider.Settings
 import android.view.SurfaceHolder
+import android.view.WindowManager
 import android.widget.ArrayAdapter
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.arvinderss.lancam.databinding.ActivityMainBinding
-import com.pedro.common.ConnectChecker
-import com.pedro.common.VideoCodec
-import com.pedro.rtspserver.RtspServerCamera2
-import com.pedro.rtspserver.server.ClientListener
-import com.pedro.rtspserver.server.IpType
-import com.pedro.rtspserver.server.ServerClient
 
-class MainActivity : AppCompatActivity(), ConnectChecker, SurfaceHolder.Callback {
+class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
     private lateinit var b: ActivityMainBinding
-    private lateinit var camera: RtspServerCamera2
-    private lateinit var discovery: Discovery
+    private var svc: StreamService? = null
+    private var surfaceReady = false
+    private val prefs by lazy { getSharedPreferences("lancam", MODE_PRIVATE) }
+
+    private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        maybeAttach()
+    }
+    private val roleLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        if (!hasCallRole()) { b.blockCalls.isChecked = false; toast("Call rejection needs the call-screening role") }
+    }
+
+    private val conn = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName, binder: IBinder) {
+            svc = (binder as StreamService.LocalBinder).service.also { s ->
+                s.onStatus = { runOnUiThread { render() } }
+                val best = StreamConfig.PRESETS.indexOfFirst { s.isSupported(it) }
+                if (best >= 0 && !prefs.contains("preset")) b.resolution.setSelection(best)
+            }
+            maybeAttach(); render()
+        }
+        override fun onServiceDisconnected(name: ComponentName) { svc = null }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         b = ActivityMainBinding.inflate(layoutInflater)
         setContentView(b.root)
-
-        camera = RtspServerCamera2(b.preview, this, StreamConfig.PORT)
-        discovery = Discovery(this)
-        camera.getStreamClient().forceIpType(IpType.IPv4)
-        // LAN-only guard: drop any client whose address is not private/link-local.
-        camera.getStreamClient().setClientListener(object : ClientListener {
-            override fun onClientConnected(client: ServerClient) {
-                if (!LanUtils.isPrivate(client.getAddress())) {
-                    client.stopClient()
-                    toast("Blocked non-LAN client ${client.getAddress()}")
-                } else {
-                    b.status.append("\nClient: ${client.getAddress()}")
-                }
-            }
-            override fun onClientDisconnected(client: ServerClient) {}
-            override fun onClientNewBitrate(bitrate: Long, client: ServerClient) {}
-        })
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         b.preview.holder.addCallback(this)
 
-        b.resolution.adapter = ArrayAdapter(
-            this, android.R.layout.simple_spinner_dropdown_item,
-            StreamConfig.PRESETS.map { it.label }
-        )
-        // Default to the best preset the back camera actually supports.
-        val supported = camera.resolutionsBack.map { it.width to it.height }.toSet()
-        val best = StreamConfig.PRESETS.indexOfFirst { (it.width to it.height) in supported }
-        if (best >= 0) b.resolution.setSelection(best)
+        b.resolution.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
+            StreamConfig.PRESETS.map { it.label })
+        b.resolution.setSelection(prefs.getInt("preset", 0))
+        b.useMic.isChecked = prefs.getBoolean("mic", false)   // default: video only
+        b.dnd.isChecked = prefs.getBoolean("dnd", true)
+        b.blockCalls.isChecked = prefs.getBoolean("calls", false)
 
-        b.toggle.setOnClickListener { if (camera.isStreaming) stopStream() else startStream() }
-        requestPermissions()
-    }
-
-    private fun startStream() {
-        val p = StreamConfig.PRESETS[b.resolution.selectedItemPosition]
-        val supported = camera.resolutionsBack.any { it.width == p.width && it.height == p.height }
-        if (!supported) {
-            toast("${p.label} not supported by this camera"); return
+        b.useMic.setOnCheckedChangeListener { _, on -> if (on) requestPerms() }
+        b.dnd.setOnCheckedChangeListener { _, on ->
+            if (on && !Dnd(this).hasAccess()) {
+                toast("Allow LanCam to control Do Not Disturb, then come back")
+                startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
+            }
         }
-        camera.setVideoCodec(VideoCodec.H265)
-        val videoOk = camera.prepareVideo(p.width, p.height, p.fps, p.bitrateMbps * 1_000_000, 0)
-            || run { camera.setVideoCodec(VideoCodec.H264); camera.prepareVideo(p.width, p.height, p.fps, p.bitrateMbps * 1_000_000, 0) }
-        val audioOk = camera.prepareAudio(128 * 1024, 48000, true)
-        if (!videoOk || !audioOk) { toast("Encoder can't handle ${p.label}"); return }
-
-        camera.startStream()
-        discovery.start()
-        b.toggle.text = "Stop"
-        b.resolution.isEnabled = false
-        val ip = LanUtils.localIpv4() ?: "<no LAN IP>"
-        b.status.text = "rtsp://$ip:${StreamConfig.PORT}/${StreamConfig.PATH}\nmDNS: ${discovery.serviceName}"
+        b.blockCalls.setOnCheckedChangeListener { _, on -> if (on && !hasCallRole()) requestCallRole() }
+        b.toggle.setOnClickListener { toggle() }
+        requestPerms()
     }
 
-    private fun stopStream() {
-        if (camera.isStreaming) camera.stopStream()
-        discovery.stop()
-        b.toggle.text = "Start"
-        b.resolution.isEnabled = true
-        b.status.text = "Idle"
+    override fun onStart() {
+        super.onStart()
+        bindService(Intent(this, StreamService::class.java), conn, Context.BIND_AUTO_CREATE)
     }
 
-    // --- Preview lifecycle ---
+    override fun onStop() {
+        prefs.edit().putInt("preset", b.resolution.selectedItemPosition)
+            .putBoolean("mic", b.useMic.isChecked).putBoolean("dnd", b.dnd.isChecked)
+            .putBoolean("calls", b.blockCalls.isChecked).apply()
+        svc?.onStatus = null
+        svc?.detachPreview()
+        unbindService(conn)
+        svc = null
+        super.onStop()
+    }
+
+    private fun toggle() {
+        val s = svc ?: return
+        if (s.isLive) { s.stop(); return }
+        if (!granted(Manifest.permission.CAMERA)) { requestPerms(); return }
+        if (b.useMic.isChecked && !granted(Manifest.permission.RECORD_AUDIO)) { requestPerms(); return }
+        val useDnd = b.dnd.isChecked && Dnd(this).hasAccess()
+        val block = b.blockCalls.isChecked && hasCallRole()
+        val err = s.start(StreamConfig.PRESETS[b.resolution.selectedItemPosition], b.useMic.isChecked, useDnd, block)
+        if (err != null) toast(err)
+        render()
+    }
+
+    private fun render() {
+        val live = svc?.isLive == true
+        b.status.text = svc?.status ?: "Idle"
+        b.toggle.text = if (live) "Stop" else "Go live"
+        listOf(b.resolution, b.useMic, b.dnd, b.blockCalls).forEach { it.isEnabled = !live }
+    }
+
+    private fun maybeAttach() {
+        if (surfaceReady && granted(Manifest.permission.CAMERA)) svc?.attachPreview(b.preview)
+    }
+
     override fun surfaceCreated(holder: SurfaceHolder) {}
-    override fun surfaceChanged(holder: SurfaceHolder, f: Int, w: Int, h: Int) {
-        if (hasPermissions() && !camera.isOnPreview) camera.startPreview()
-    }
-    override fun surfaceDestroyed(holder: SurfaceHolder) {
-        stopStream()
-        if (camera.isOnPreview) camera.stopPreview()
+    override fun surfaceChanged(holder: SurfaceHolder, f: Int, w: Int, h: Int) { surfaceReady = true; maybeAttach() }
+    override fun surfaceDestroyed(holder: SurfaceHolder) { surfaceReady = false; svc?.detachPreview() }
+
+    private fun requestPerms() {
+        val want = mutableListOf(Manifest.permission.CAMERA)
+        if (b.useMic.isChecked) want += Manifest.permission.RECORD_AUDIO
+        if (Build.VERSION.SDK_INT >= 33) want += Manifest.permission.POST_NOTIFICATIONS
+        val missing = want.filterNot { granted(it) }
+        if (missing.isNotEmpty()) permLauncher.launch(missing.toTypedArray())
     }
 
-    // --- ConnectChecker callbacks (one per RTSP client) ---
-    override fun onConnectionStarted(url: String) {}
-    override fun onConnectionSuccess() = runOnUiThread { toast("Client connected") }
-    override fun onConnectionFailed(reason: String) = runOnUiThread { toast("Client error: $reason") }
-    override fun onDisconnect() = runOnUiThread { toast("Client disconnected") }
-    override fun onAuthError() {}
-    override fun onAuthSuccess() {}
-    override fun onNewBitrate(bitrate: Long) {}
+    private fun granted(p: String) = ContextCompat.checkSelfPermission(this, p) == PackageManager.PERMISSION_GRANTED
 
-    // --- Permissions ---
-    private val perms = arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
-    private fun hasPermissions() = perms.all {
-        ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
-    }
-    private fun requestPermissions() {
-        if (!hasPermissions()) ActivityCompat.requestPermissions(this, perms, 1)
-    }
-    override fun onRequestPermissionsResult(c: Int, p: Array<out String>, r: IntArray) {
-        super.onRequestPermissionsResult(c, p, r)
-        if (hasPermissions() && !camera.isOnPreview) camera.startPreview()
+    private fun hasCallRole() = getSystemService(RoleManager::class.java).isRoleHeld(RoleManager.ROLE_CALL_SCREENING)
+    private fun requestCallRole() {
+        val rm = getSystemService(RoleManager::class.java)
+        if (rm.isRoleAvailable(RoleManager.ROLE_CALL_SCREENING))
+            roleLauncher.launch(rm.createRequestRoleIntent(RoleManager.ROLE_CALL_SCREENING))
     }
 
-    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
-
-    override fun onDestroy() {
-        stopStream()
-        super.onDestroy()
-    }
+    private fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_LONG).show()
 }
