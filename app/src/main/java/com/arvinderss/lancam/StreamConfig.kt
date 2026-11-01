@@ -3,7 +3,6 @@ package com.arvinderss.lancam
 object StreamConfig {
     const val PORT = 8554
     const val PATH = "live"
-    const val SERVICE_TYPE = "_rtsp._tcp."
 
     data class Preset(val label: String, val width: Int, val height: Int, val fps: Int, val bitrateMbps: Int)
 

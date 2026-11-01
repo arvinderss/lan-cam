@@ -38,6 +38,8 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
             svc = (binder as StreamService.LocalBinder).service.also { s ->
                 s.onStatus = { runOnUiThread { render() } }
+                setupLens(s)
+                b.lock.isChecked = s.locked
                 val best = StreamConfig.PRESETS.indexOfFirst { s.isSupported(it) }
                 if (best >= 0 && !prefs.contains("preset")) b.resolution.setSelection(best)
             }
@@ -69,6 +71,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
         }
         b.blockCalls.setOnCheckedChangeListener { _, on -> if (on && !hasCallRole()) requestCallRole() }
         b.toggle.setOnClickListener { toggle() }
+        b.lock.setOnCheckedChangeListener { _, on -> svc?.setLocked(on) }
         requestPerms()
     }
 
@@ -80,7 +83,8 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
     override fun onStop() {
         prefs.edit().putInt("preset", b.resolution.selectedItemPosition)
             .putBoolean("mic", b.useMic.isChecked).putBoolean("dnd", b.dnd.isChecked)
-            .putBoolean("calls", b.blockCalls.isChecked).apply()
+            .putBoolean("calls", b.blockCalls.isChecked)
+            .putFloat("lens", svc?.zoom ?: 1f).apply()
         svc?.onStatus = null
         svc?.detachPreview()
         unbindService(conn)
@@ -105,6 +109,21 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
         b.status.text = svc?.status ?: "Idle"
         b.toggle.text = if (live) "Stop" else "Go live"
         listOf(b.resolution, b.useMic, b.dnd, b.blockCalls).forEach { it.isEnabled = !live }
+    }
+
+    private var lenses: List<Float> = listOf(1f)
+    private fun setupLens(s: StreamService) {
+        lenses = s.lensOptions()
+        b.lens.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
+            lenses.map { if (it < 1f) "Wide ${it}x" else "${it.toInt()}x" })
+        val saved = prefs.getFloat("lens", 1f)
+        val idx = lenses.indexOfFirst { kotlin.math.abs(it - saved) < 0.01f }.takeIf { it >= 0 } ?: lenses.indexOf(1f).coerceAtLeast(0)
+        b.lens.setSelection(idx, false)
+        s.setLens(lenses[idx])
+        b.lens.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p: android.widget.AdapterView<*>?, v: android.view.View?, pos: Int, id: Long) { svc?.setLens(lenses[pos]) }
+            override fun onNothingSelected(p: android.widget.AdapterView<*>?) {}
+        }
     }
 
     private fun maybeAttach() {

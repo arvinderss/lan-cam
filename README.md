@@ -6,8 +6,7 @@ Turn an Android phone into an **offline Wi-Fi / LAN camera** (up to 4K, H.265) t
 - **Camera2** captures at up to 4K (falls back to 1440p/1080p).
 - **Hardware H.265 (HEVC)** encoding, falls back to H.264 if HEVC is unavailable.
 - A built-in **RTSP server** (via the open-source RootEncoder / RTSP-Server libraries) runs on the phone, port `8554`.
-- The phone advertises itself on the LAN with **mDNS / DNS-SD** (`_rtsp._tcp`) using Android NSD.
-- **No internet use**: no analytics, no cloud, no update checks. The only network traffic is the RTSP stream to clients that connect to it and mDNS on the local subnet. Any RTSP client whose IP is not a private/link-local LAN address is disconnected immediately. Still, don't port-forward 8554 on your router.
+- **No internet use**: no analytics, no cloud, no update checks. The only network traffic is the RTSP stream to clients that connect to it. Any RTSP client whose IP is not a private/link-local LAN address is disconnected immediately. Still, don't port-forward 8554 on your router.
 
 > Android requires the `INTERNET` permission for *any* socket, including LAN-only ones. The app never opens outbound connections.
 
@@ -27,10 +26,6 @@ Every push to `main` builds an APK and publishes it as a GitHub **Release**. On 
 ### Monitoring in a browser
 While live, open `http://<phone-ip>:8080` in any browser on the same Wi-Fi for a low-res (~960px, ~4 fps) preview. It's LAN-only and only uses extra resources while a browser is watching. For a full-quality monitor, open the RTSP URL in VLC (Media > Open Network Stream).
 
-### Discovering the camera
-- macOS: `dns-sd -B _rtsp._tcp` then `dns-sd -L "LanCam-<model>" _rtsp._tcp`
-- Linux: `avahi-browse -rt _rtsp._tcp`
-- Windows: any Bonjour/mDNS browser, or use the URL shown on the phone.
 
 ## Live-streaming features
 - **Runs as a foreground service**: keeps streaming with the screen locked or while using other apps. A notification shows status and has a **Stop** button.
@@ -38,6 +33,14 @@ While live, open `http://<phone-ip>:8080` in any browser on the same Wi-Fi for a
 - **Do Not Disturb while live**: switches the phone to total silence when you go live and restores your previous mode when you stop. Needs one-time Do Not Disturb access.
 - **Reject incoming calls while live**: needs LanCam to hold the *Caller ID & spam* (call-screening) role. Some Android versions only let screening apps see calls from numbers not in your contacts; DND still keeps those silent.
 - Keeps CPU and Wi-Fi awake (low-latency Wi-Fi lock) while live.
+
+## Camera controls
+- **Lens**: pick ultra-wide (0.5x), main (1x) or tele (2x/3x/5x), depending on what your phone has. Remembered between sessions.
+- **Lock focus/exposure/WB**: frame your shot, then switch on to stop focus hunting and brightness pumping. Resets to off each session so you always re-check framing.
+
+## Resilience
+- If Wi-Fi drops, the phone keeps encoding and the server keeps listening; the app shows a warning. In OBS's Media Source, set **Reconnect Delay** (e.g. 2 s) so it reconnects by itself.
+- A heat warning appears on screen and in the notification when Android reports the phone is getting hot.
 
 ## Tips
 - Keep the phone plugged in and ventilated; 4K60 runs hot.

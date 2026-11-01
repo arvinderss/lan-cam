@@ -8,17 +8,24 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import android.os.Binder
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.pedro.common.ConnectChecker
 import com.pedro.common.VideoCodec
-import com.pedro.library.view.TakePhotoCallback
+import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.library.view.OpenGlView
+import com.pedro.library.view.TakePhotoCallback
 import com.pedro.rtspserver.RtspServerCamera2
 import com.pedro.rtspserver.server.ClientListener
 import com.pedro.rtspserver.server.IpType
@@ -32,9 +39,9 @@ class StreamService : Service(), ConnectChecker {
 
     inner class LocalBinder : Binder() { val service get() = this@StreamService }
     private val binder = LocalBinder()
+    private val main = Handler(Looper.getMainLooper())
 
     private lateinit var camera: RtspServerCamera2
-    private lateinit var discovery: Discovery
     private lateinit var dnd: Dnd
     private lateinit var web: WebPreview
     private var wakeLock: PowerManager.WakeLock? = null
@@ -42,14 +49,24 @@ class StreamService : Service(), ConnectChecker {
     private var previewView: OpenGlView? = null
     private val clients = mutableSetOf<String>()
 
+    // Camera controls (re-applied whenever the camera session restarts)
+    var zoom = 1f; private set
+    var locked = false; private set
+
+    // Health
+    private var wifiUp = true
+    private var thermal = PowerManager.THERMAL_STATUS_NONE
+    private val thermalListener = PowerManager.OnThermalStatusChangedListener { thermal = it; updateStatus() }
+    private var netCallback: ConnectivityManager.NetworkCallback? = null
+
     var status: String = "Idle"; private set
     var onStatus: (() -> Unit)? = null
     val isLive get() = StreamState.live
+    private var label = ""
 
     override fun onCreate() {
         super.onCreate()
         camera = RtspServerCamera2(this, this, StreamConfig.PORT)
-        discovery = Discovery(this)
         dnd = Dnd(this)
         web = WebPreview { onFrame -> camera.glInterface.takePhoto(TakePhotoCallback { bmp -> onFrame(bmp) }) }
         camera.getStreamClient().forceIpType(IpType.IPv4)
@@ -76,11 +93,43 @@ class StreamService : Service(), ConnectChecker {
     fun isSupported(p: StreamConfig.Preset) =
         camera.resolutionsBack.any { it.width == p.width && it.height == p.height }
 
+    // ---- Lens & lock ----
+    /** Lens choices this phone supports, as zoom ratios (0.5x needs an ultra-wide camera). */
+    fun lensOptions(): List<Float> {
+        val r = runCatching { camera.zoomRange }.getOrNull() ?: return listOf(1f)
+        return listOf(0.5f, 1f, 2f, 3f, 5f).filter { it >= r.lower - 0.01f && it <= r.upper + 0.01f }
+    }
+
+    fun setLens(z: Float) { zoom = z; runCatching { camera.setZoom(z) } }
+
+    /** Freezes focus, exposure and white balance at their current values (or releases them). */
+    fun setLocked(on: Boolean) { locked = on; applyLock() }
+
+    private fun applyLock() = runCatching {
+        if (locked) {
+            camera.disableAutoFocus()
+            camera.enableExposureLock()
+            camera.enableWhiteBalanceLock()
+        } else {
+            camera.disableWhiteBalanceLock()
+            camera.disableExposureLock()
+            camera.enableAutoFocus()
+        }
+    }
+
+    /** Camera opens asynchronously, so re-apply controls once the session is up. */
+    private fun applyCameraSoon() {
+        main.postDelayed({ runCatching { camera.setZoom(zoom) }; applyLock() }, 800)
+    }
+
     // ---- Preview (only while the activity is visible) ----
     fun attachPreview(view: OpenGlView) {
         previewView = view
         camera.replaceView(view)
-        if (!camera.isOnPreview && !camera.isStreaming) camera.startPreview(com.pedro.encoder.input.video.CameraHelper.Facing.BACK, 1920, 1080, 30, 0)
+        if (!camera.isOnPreview && !camera.isStreaming) {
+            camera.startPreview(CameraHelper.Facing.BACK, 1920, 1080, 30, 0)
+            applyCameraSoon()
+        }
     }
 
     fun detachPreview() {
@@ -112,24 +161,26 @@ class StreamService : Service(), ConnectChecker {
         ContextCompat.startForegroundService(this, Intent(this, StreamService::class.java))
         val type = ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
             (if (useMic) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0)
-        ServiceCompat.startForeground(this, NOTIF_ID, buildNotification(p.label), type)
+        label = p.label + if (useMic) " + phone mic" else " (video only)"
+        ServiceCompat.startForeground(this, NOTIF_ID, buildNotification(label), type)
 
         previewView?.let { camera.replaceView(it) }
         camera.startStream()
-        discovery.start()
+        applyCameraSoon()
         runCatching { web.start() }
         acquireLocks()
+        watchHealth()
         if (useDnd) dnd.enable()
         StreamState.blockCalls = blockCalls
         StreamState.live = true
-        updateStatus(p.label + if (useMic) " + phone mic" else " (video only)")
+        updateStatus()
         return null
     }
 
     fun stop() {
         if (camera.isStreaming) camera.stopStream()
-        discovery.stop()
         web.stop()
+        unwatchHealth()
         releaseLocks()
         dnd.restore()
         StreamState.live = false
@@ -140,16 +191,50 @@ class StreamService : Service(), ConnectChecker {
         updateStatus()
     }
 
-    private var label = ""
-    private fun updateStatus(newLabel: String? = null) {
-        newLabel?.let { label = it }
+    // ---- Wi-Fi drop recovery + thermal watch ----
+    // The RTSP server keeps listening on all interfaces through a Wi-Fi drop and the
+    // encoder keeps running, so OBS can simply reconnect once Wi-Fi is back.
+    private fun watchHealth() {
+        val pm = getSystemService(PowerManager::class.java)
+        thermal = pm.currentThermalStatus
+        pm.addThermalStatusListener(ContextCompat.getMainExecutor(this), thermalListener)
+
+        val cm = getSystemService(ConnectivityManager::class.java)
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) { main.post { wifiUp = true; updateStatus() } }
+            override fun onLost(network: Network) { main.post { wifiUp = false; clients.clear(); updateStatus() } }
+        }
+        cm.registerNetworkCallback(
+            NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(), cb)
+        netCallback = cb
+    }
+
+    private fun unwatchHealth() {
+        runCatching { getSystemService(PowerManager::class.java).removeThermalStatusListener(thermalListener) }
+        netCallback?.let { runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(it) } }
+        netCallback = null
+        wifiUp = true
+        thermal = PowerManager.THERMAL_STATUS_NONE
+    }
+
+    private fun warning(): String? = when {
+        !wifiUp -> "Wi-Fi lost - still running, OBS will reconnect when it's back"
+        thermal >= PowerManager.THERMAL_STATUS_SEVERE -> "Phone overheating - frames may drop. Cool it or lower quality"
+        thermal >= PowerManager.THERMAL_STATUS_MODERATE -> "Phone getting hot"
+        else -> null
+    }
+
+    private fun updateStatus() {
+        val ip = LanUtils.localIpv4() ?: "<no LAN IP>"
         status = if (!StreamState.live) "Idle" else buildString {
+            warning()?.let { append("WARNING: ").append(it).append("\n") }
             append("LIVE ").append(label)
-            append("\nrtsp://").append(LanUtils.localIpv4() ?: "<no LAN IP>")
-            append(":").append(StreamConfig.PORT).append("/").append(StreamConfig.PATH)
-            append("\nBrowser preview: http://").append(LanUtils.localIpv4() ?: "<no LAN IP>").append(":").append(WebPreview.PORT)
-            append("\nmDNS: ").append(discovery.serviceName)
+            append("\nrtsp://").append(ip).append(":").append(StreamConfig.PORT).append("/").append(StreamConfig.PATH)
+            append("\nBrowser preview: http://").append(ip).append(":").append(WebPreview.PORT)
             append("\nViewers: ").append(if (clients.isEmpty()) "none" else clients.joinToString())
+        }
+        if (StreamState.live) {
+            getSystemService(NotificationManager::class.java).notify(NOTIF_ID, buildNotification(warning() ?: label))
         }
         onStatus?.invoke()
     }
@@ -180,6 +265,7 @@ class StreamService : Service(), ConnectChecker {
             .setContentTitle("LanCam is live")
             .setContentText(text)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setContentIntent(open)
             .addAction(android.R.drawable.ic_media_pause, "Stop", stop)
             .build()
