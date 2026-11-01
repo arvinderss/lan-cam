@@ -26,10 +26,10 @@ class Discovery(private val context: Context) {
             setAttribute("codec", "h265")
         }
         listener = object : NsdManager.RegistrationListener {
-            override fun onServiceRegistered(i: NsdServiceInfo) = Log.i(TAG, "mDNS registered: ${i.serviceName}")
-            override fun onRegistrationFailed(i: NsdServiceInfo, e: Int) = Log.w(TAG, "mDNS failed: $e")
-            override fun onServiceUnregistered(i: NsdServiceInfo) = Log.i(TAG, "mDNS unregistered")
-            override fun onUnregistrationFailed(i: NsdServiceInfo, e: Int) = Log.w(TAG, "mDNS unregister failed: $e")
+            override fun onServiceRegistered(i: NsdServiceInfo) { Log.i(TAG, "mDNS registered: ${i.serviceName}") }
+            override fun onRegistrationFailed(i: NsdServiceInfo, e: Int) { Log.w(TAG, "mDNS failed: $e") }
+            override fun onServiceUnregistered(i: NsdServiceInfo) { Log.i(TAG, "mDNS unregistered") }
+            override fun onUnregistrationFailed(i: NsdServiceInfo, e: Int) { Log.w(TAG, "mDNS unregister failed: $e") }
         }
         nsd.registerService(info, NsdManager.PROTOCOL_DNS_SD, listener)
     }
