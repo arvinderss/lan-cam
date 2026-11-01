@@ -11,8 +11,8 @@ Turn an Android phone into an **offline Wi-Fi / LAN camera** (up to 4K, H.265) t
 
 > Android requires the `INTERNET` permission for *any* socket, including LAN-only ones. The app never opens outbound connections.
 
-## Download
-Every push to `main` builds a debug APK via GitHub Actions: open the **Actions** tab, pick the latest *Build APK* run, and download the `LanCam-debug-apk` artifact.
+## Download (straight to your phone)
+Every push to `main` builds an APK and publishes it as a GitHub **Release**. On the phone, open https://github.com/arvinderss/lan-cam/releases/latest (logged in, since the repo is private), tap `LanCam-<n>.apk`, and allow installs from your browser when prompted. The same APK is also attached to each Actions run as an artifact.
 
 ## Build locally
 1. Open the project in Android Studio (Ladybug or newer), JDK 17.

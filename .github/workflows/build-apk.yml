@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -23,8 +26,24 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew --no-daemon assembleDebug
+          mkdir -p out
+          cp app/build/outputs/apk/debug/app-debug.apk out/LanCam-${{ github.run_number }}.apk
 
       - uses: actions/upload-artifact@v4
         with:
           name: LanCam-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: out/*.apk
+
+      # Publish a GitHub Release with the APK attached, so it can be
+      # downloaded and installed straight from a phone browser / GitHub app.
+      - name: Publish release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: LanCam build ${{ github.run_number }}
+          body: |
+            Automatic debug build from ${{ github.sha }}.
+            On your phone: tap the .apk below, then allow installing from this source when asked.
+          files: out/*.apk
+          make_latest: true
