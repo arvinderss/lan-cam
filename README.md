@@ -7,13 +7,13 @@ Turn an Android phone into an **offline Wi-Fi / LAN camera** (up to 8K, H.265) t
 - **Hardware H.265 (HEVC)** encoding, falls back to H.264 if HEVC is unavailable.
 - A built-in **RTSP server** (via the open-source RootEncoder / RTSP-Server libraries) runs on the phone, port `8554`.
 - The phone advertises itself on the LAN with **mDNS / DNS-SD** (`_rtsp._tcp`) using Android NSD.
-- **No internet use**: no analytics, no cloud, no update checks. The only network traffic is the RTSP stream to LAN clients and mDNS on the local subnet. Clients from non-private (public) IP ranges are rejected.
+- **No internet use**: no analytics, no cloud, no update checks. The only network traffic is the RTSP stream to clients that connect to it and mDNS on the local subnet. The server listens on the phone's LAN address, which a normal home router does not expose to the internet. Don't port-forward 8554 on your router.
 
 > Android requires the `INTERNET` permission for *any* socket, including LAN-only ones. The app never opens outbound connections.
 
 ## Build
 1. Open the project in Android Studio (Ladybug or newer), JDK 17.
-2. Build & install: `./gradlew installDebug`
+2. Build & install: `chmod +x gradlew && ./gradlew installDebug` (on Windows: `gradlew.bat installDebug`)
 3. Grant camera + microphone permissions.
 
 ## Use with OBS Studio
