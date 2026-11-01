@@ -17,6 +17,7 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.pedro.common.ConnectChecker
 import com.pedro.common.VideoCodec
+import com.pedro.library.view.TakePhotoCallback
 import com.pedro.library.view.OpenGlView
 import com.pedro.rtspserver.RtspServerCamera2
 import com.pedro.rtspserver.server.ClientListener
@@ -35,6 +36,7 @@ class StreamService : Service(), ConnectChecker {
     private lateinit var camera: RtspServerCamera2
     private lateinit var discovery: Discovery
     private lateinit var dnd: Dnd
+    private lateinit var web: WebPreview
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var previewView: OpenGlView? = null
@@ -49,6 +51,7 @@ class StreamService : Service(), ConnectChecker {
         camera = RtspServerCamera2(this, this, StreamConfig.PORT)
         discovery = Discovery(this)
         dnd = Dnd(this)
+        web = WebPreview { onFrame -> camera.glInterface.takePhoto(TakePhotoCallback { bmp -> onFrame(bmp) }) }
         camera.getStreamClient().forceIpType(IpType.IPv4)
         camera.getStreamClient().setClientListener(object : ClientListener {
             override fun onClientConnected(client: ServerClient) {
@@ -114,6 +117,7 @@ class StreamService : Service(), ConnectChecker {
         previewView?.let { camera.replaceView(it) }
         camera.startStream()
         discovery.start()
+        runCatching { web.start() }
         acquireLocks()
         if (useDnd) dnd.enable()
         StreamState.blockCalls = blockCalls
@@ -125,6 +129,7 @@ class StreamService : Service(), ConnectChecker {
     fun stop() {
         if (camera.isStreaming) camera.stopStream()
         discovery.stop()
+        web.stop()
         releaseLocks()
         dnd.restore()
         StreamState.live = false
@@ -142,6 +147,7 @@ class StreamService : Service(), ConnectChecker {
             append("LIVE ").append(label)
             append("\nrtsp://").append(LanUtils.localIpv4() ?: "<no LAN IP>")
             append(":").append(StreamConfig.PORT).append("/").append(StreamConfig.PATH)
+            append("\nBrowser preview: http://").append(LanUtils.localIpv4() ?: "<no LAN IP>").append(":").append(WebPreview.PORT)
             append("\nmDNS: ").append(discovery.serviceName)
             append("\nViewers: ").append(if (clients.isEmpty()) "none" else clients.joinToString())
         }

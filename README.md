@@ -24,6 +24,9 @@ Every push to `main` builds an APK and publishes it as a GitHub **Release**. On 
 2. Open LanCam, pick resolution, tap **Start**. The app shows the stream URL, e.g. `rtsp://192.168.1.42:8554/live`.
 3. In OBS: **Sources > + > Media Source**, untick *Local File*, paste the URL in *Input*, set *Network Buffering* to ~1 MB, and untick *Restart playback when source becomes active* if you want lower latency.
 
+### Monitoring in a browser
+While live, open `http://<phone-ip>:8080` in any browser on the same Wi-Fi for a low-res (~960px, ~4 fps) preview. It's LAN-only and only uses extra resources while a browser is watching. For a full-quality monitor, open the RTSP URL in VLC (Media > Open Network Stream).
+
 ### Discovering the camera
 - macOS: `dns-sd -B _rtsp._tcp` then `dns-sd -L "LanCam-<model>" _rtsp._tcp`
 - Linux: `avahi-browse -rt _rtsp._tcp`
