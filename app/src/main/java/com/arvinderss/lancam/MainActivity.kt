@@ -13,6 +13,9 @@ import com.arvinderss.lancam.databinding.ActivityMainBinding
 import com.pedro.common.ConnectChecker
 import com.pedro.common.VideoCodec
 import com.pedro.rtspserver.RtspServerCamera2
+import com.pedro.rtspserver.server.ClientListener
+import com.pedro.rtspserver.server.IpType
+import com.pedro.rtspserver.server.ServerClient
 
 class MainActivity : AppCompatActivity(), ConnectChecker, SurfaceHolder.Callback {
 
@@ -27,6 +30,20 @@ class MainActivity : AppCompatActivity(), ConnectChecker, SurfaceHolder.Callback
 
         camera = RtspServerCamera2(b.preview, this, StreamConfig.PORT)
         discovery = Discovery(this)
+        camera.getStreamClient().forceIpType(IpType.IPv4)
+        // LAN-only guard: drop any client whose address is not private/link-local.
+        camera.getStreamClient().setClientListener(object : ClientListener {
+            override fun onClientConnected(client: ServerClient) {
+                if (!LanUtils.isPrivate(client.getAddress())) {
+                    client.stopClient()
+                    toast("Blocked non-LAN client ${client.getAddress()}")
+                } else {
+                    b.status.append("\nClient: ${client.getAddress()}")
+                }
+            }
+            override fun onClientDisconnected(client: ServerClient) {}
+            override fun onClientNewBitrate(bitrate: Long, client: ServerClient) {}
+        })
         b.preview.holder.addCallback(this)
 
         b.resolution.adapter = ArrayAdapter(
@@ -87,6 +104,7 @@ class MainActivity : AppCompatActivity(), ConnectChecker, SurfaceHolder.Callback
     override fun onDisconnect() = runOnUiThread { toast("Client disconnected") }
     override fun onAuthError() {}
     override fun onAuthSuccess() {}
+    override fun onNewBitrate(bitrate: Long) {}
 
     // --- Permissions ---
     private val perms = arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
